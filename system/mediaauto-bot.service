@@ -1,0 +1,14 @@
+[Unit]
+Description=MediaAuto Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mediaauto
+ExecStart=/opt/mediaauto/venv/bin/python /opt/mediaauto/src/worker_launcher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

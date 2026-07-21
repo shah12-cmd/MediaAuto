@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>MediaAuto Panel</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  </head>
+  <body>
+    <div class="container mt-4">
+      <h1>MediaAuto Dashboard</h1>
+      <hr/>
+      <h3>Sources</h3>
+      <form method="post" action="/sources/add" class="row g-2 mb-3">
+        <div class="col-auto"><input name="name" class="form-control" placeholder="Name"></div>
+        <div class="col-auto"><input name="peer" class="form-control" placeholder="@channel or id"></div>
+        <div class="col-auto"><button class="btn btn-primary">Add</button></div>
+      </form>
+      <table class="table table-sm">
+        <thead><tr><th>ID</th><th>Name</th><th>Peer</th><th>Action</th></tr></thead>
+        <tbody>
+        {% for s in sources %}
+          <tr>
+            <td>{{ s.id }}</td>
+            <td>{{ s.name }}</td>
+            <td>{{ s.peer }}</td>
+            <td>
+              <form method="post" action="/sources/delete" style="display:inline">
+                <input type="hidden" name="id" value="{{ s.id }}"/>
+                <button class="btn btn-sm btn-danger">Delete</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <h3>Recent Logs</h3>
+      <pre style="height:300px;overflow:auto;background:#111;color:#0f0;padding:10px;">{% for l in logs %}{{ l.created_at }} [{{ l.level }}] {{ l.message }}
+{% endfor %}</pre>
+    </div>
+  </body>
+</html>
