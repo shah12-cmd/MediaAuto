@@ -1,52 +1,71 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-VENV_DIR="$REPO_DIR/venv"
-ENV_FILE="$REPO_DIR/.env"
+# MediaAuto installer - installs into /opt/mediaauto by default and sets up systemd services
 
-echo "=== MediaAuto Installer ==="
+REPO_CWD="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_INSTALL_DIR="/opt/mediaauto"
 
-# Update and install system packages
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip ffmpeg git nginx supervisor
-
-# yt-dlp
-python3 -m pip install --upgrade pip
-python3 -m pip install yt-dlp
-
-# Create virtualenv
-if [ ! -d "$VENV_DIR" ]; then
-  python3 -m venv "$VENV_DIR"
+if [ "$EUID" -ne 0 ]; then
+  echo "This installer must be run as root (or via sudo)." >&2
+  exit 1
 fi
-source "$VENV_DIR/bin/activate"
 
-pip install --upgrade pip
-pip install -r requirements.txt
+read -p "Install directory [${DEFAULT_INSTALL_DIR}]: " INSTALL_DIR
+INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
 
-# Interactive configuration
-read -p "Telegram bot token (leave empty if you will use user account instead): " TELEGRAM_BOT_TOKEN
+echo "Installing MediaAuto into: $INSTALL_DIR"
+
+# Create mediaauto system user
+if ! id -u mediaauto >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir $INSTALL_DIR --shell /usr/sbin/nologin mediaauto || true
+  echo "Created system user 'mediaauto'"
+fi
+
+# Stop services if running
+systemctl stop mediaauto-bot.service mediaauto-panel.service >/dev/null 2>&1 || true
+
+# Rsync files to install dir
+mkdir -p "$INSTALL_DIR"
+rsync -a --delete --exclude ".git" --exclude "venv" "$REPO_CWD/" "$INSTALL_DIR/"
+chown -R mediaauto:mediaauto "$INSTALL_DIR"
+
+# Create Python venv
+if [ ! -d "$INSTALL_DIR/venv" ]; then
+  python3 -m venv "$INSTALL_DIR/venv"
+fi
+
+# Install system packages
+apt update
+apt install -y python3-venv python3-pip ffmpeg git nginx
+
+# Ensure pip up-to-date and install requirements into venv
+"$INSTALL_DIR/venv/bin/pip" install --upgrade pip
+"$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+
+# Make sure scripts are executable
+chmod +x "$INSTALL_DIR/scripts/create_session.py"
+chmod +x "$INSTALL_DIR/install.sh"
+
+# Interactive configuration - prompt and write to .env in install dir (owned by mediaauto)
+ENV_FILE="$INSTALL_DIR/.env"
+
+read -p "Telegram bot token (leave empty if using user account): " TELEGRAM_BOT_TOKEN
 read -p "Telegram API ID: " TELEGRAM_API_ID
 read -p "Telegram API HASH: " TELEGRAM_API_HASH
 read -p "Telegram phone number (for Telethon user login, e.g. +98912...): " TELEGRAM_PHONE
-
-read -p "Do you want to login now and create Telethon session? (y/n): " LOGIN_NOW
-
-# AI settings
 read -p "OpenAI API Key (leave empty to skip AI features): " OPENAI_API_KEY
-
-# Panel settings
-read -p "Panel admin username: " PANEL_USER
-read -sp "Panel admin password: " PANEL_PASS
+read -p "Panel admin username (default: admin): " PANEL_USER
+PANEL_USER=${PANEL_USER:-admin}
+read -sp "Panel admin password (will be stored hashed): " PANEL_PASS
 echo
-
-# Storage and download settings
-read -p "Media storage directory (default: data/media): " MEDIA_DIR
-MEDIA_DIR=${MEDIA_DIR:-data/media}
+read -p "Media storage directory under install dir (default: data/media): " MEDIA_DIR_INPUT
+MEDIA_DIR_INPUT=${MEDIA_DIR_INPUT:-data/media}
+MEDIA_DIR="$INSTALL_DIR/$MEDIA_DIR_INPUT"
 
 mkdir -p "$MEDIA_DIR"
+chown -R mediaauto:mediaauto "$INSTALL_DIR"
 
-# Write to .env
 cat > "$ENV_FILE" <<EOF
 TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 TELEGRAM_API_ID=$TELEGRAM_API_ID
@@ -58,20 +77,52 @@ PANEL_ADMIN_USER=$PANEL_USER
 PANEL_ADMIN_PASS=$PANEL_PASS
 EOF
 
-echo "Written configuration to $ENV_FILE"
+chown mediaauto:mediaauto "$ENV_FILE"
+chmod 600 "$ENV_FILE"
 
-# Optionally create telethon session via helper
-if [[ "$LOGIN_NOW" =~ ^[Yy]$ ]]; then
-  echo "Starting interactive Telethon login. Follow prompts."
-  python3 "$REPO_DIR/scripts/create_session.py"
-fi
+# Create systemd service files with correct paths
+BOT_SERVICE="/etc/systemd/system/mediaauto-bot.service"
+PANEL_SERVICE="/etc/systemd/system/mediaauto-panel.service"
 
-# Setup systemd services
-sudo cp "$REPO_DIR/system/mediaauto-bot.service" /etc/systemd/system/mediaauto-bot.service
-sudo cp "$REPO_DIR/system/mediaauto-panel.service" /etc/systemd/system/mediaauto-panel.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now mediaauto-bot.service
-sudo systemctl enable --now mediaauto-panel.service
+cat > "$BOT_SERVICE" <<EOF
+[Unit]
+Description=MediaAuto Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=mediaauto
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/src/worker_launcher.py
+Restart=always
+RestartSec=5
+Environment=PYTHONPATH=$INSTALL_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$PANEL_SERVICE" <<EOF
+[Unit]
+Description=MediaAuto Panel (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=mediaauto
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/venv/bin/uvicorn src.panel:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONPATH=$INSTALL_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now mediaauto-bot.service mediaauto-panel.service || true
 
 echo "Installation complete."
-echo "Use: sudo journalctl -u mediaauto-bot -f  (or mediaauto-panel) to follow logs."
+echo "Install dir: $INSTALL_DIR"
+echo "To follow logs: sudo journalctl -u mediaauto-bot -f"

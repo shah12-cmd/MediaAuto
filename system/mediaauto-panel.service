@@ -4,11 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=mediaauto
 WorkingDirectory=/opt/mediaauto
 ExecStart=/opt/mediaauto/venv/bin/uvicorn src.panel:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
+Environment=PYTHONPATH=/opt/mediaauto
 
 [Install]
 WantedBy=multi-user.target
